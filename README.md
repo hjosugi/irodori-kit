@@ -1,32 +1,20 @@
 # irodori-kit
 
-Foundation crates for [Irodori Table](https://github.com/hjosugi/irodori-table) — the reusable Rust workspace the desktop app boots on. Split out of `irodori-table` so the app repo stays lean and app development is faster.
+Shared foundation for Irodori Table.
 
-## Crates
+## Contains
 
-| Crate | Purpose |
-| --- | --- |
-| `irodori-connection` | Connection profile types & transports (direct/socket/SSH/proxy) |
-| `irodori-security` | Audit logging & event tracking |
-| `irodori-core` | Error types, job runtime, audit events |
-| `irodori-proxy` | Database proxy/tunnel wrapping |
-| `irodori-secure-store` | Credential storage |
-| `irodori-completion` | SQL completion engine |
-| `irodori-generate` | SQL generation / planning / validation |
-| `irodori-extension` | Extension SDK & connector experience model |
-| `irodori-io` | Tabular import/export (CSV/TSV/JSON/JSONL/SQL/Parquet/Avro) |
-| `irodori-server` | Headless HTTP data API |
+- Rust crates for connections, security, completion, generation, IO, proxying,
+  secure storage, extensions, and the headless server.
+- `packages/extension-sdk`, the TypeScript SDK and templates for extensions.
 
-## Packages
+`irodori-table` consumes this repo by Git tag.
 
-| Package | Purpose |
-| --- | --- |
-| `packages/extension-sdk` | TypeScript extension SDK package, manifest schema, extension-dev helper, and starter templates generated from `irodori-extension`. |
+## Develop
 
-Consumed by `irodori-table` via git tag; for co-development use a local Cargo
-`[patch]` / path dependency pointing at a sibling `../irodori-kit` checkout.
+```sh
+cargo test --workspace
+npm --prefix packages/extension-sdk run check
+```
 
-Dependency direction is one-way: `irodori-table` (app) → `irodori-kit` → the
-domain libraries (`irodori-sql`, `irodori-knowledge`). Nothing here references the app.
-
-License: MIT OR 0BSD.
+License: `MIT OR 0BSD`.
