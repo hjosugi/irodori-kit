@@ -1,0 +1,54 @@
+{
+  "name": "@irodori-table/extension-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript SDK, manifest schema, and templates for Irodori Table extensions.",
+  "license": "MIT OR 0BSD",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hjosugi/irodori-kit.git",
+    "directory": "packages/extension-sdk"
+  },
+  "bin": {
+    "irodori-extension-dev": "./bin/irodori-extension-dev.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "extension.schema.json",
+    "src/generated",
+    "templates"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./dev": {
+      "types": "./dist/dev.d.ts",
+      "import": "./dist/dev.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
+  },
+  "scripts": {
+    "typegen": "node tools/typegen.mjs",
+    "typegen:check": "node tools/typegen.mjs --check",
+    "validate": "node tools/validate-manifests.mjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run validate && npm run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3"
+  }
+}

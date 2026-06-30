@@ -1030,12 +1030,13 @@ mod tests {
 mod typegen {
     use super::*;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use typeship::ir::{Decl, TsType};
     use typeship::Bridge;
     use typeship_ts_rs::decl;
 
-    const GENERATED: &str = "../../packages/extension-sdk/src/generated/irodori-extension-api.ts";
+    const GENERATED: &str = "../packages/extension-sdk/src/generated/irodori-extension-api.ts";
+    const GENERATED_ENV: &str = "IRODORI_EXTENSION_SDK_GENERATED";
 
     fn normalized_bindings(contents: &str) -> String {
         let mut normalized = contents
@@ -1115,18 +1116,26 @@ mod typegen {
             .with_assert_never(true)
     }
 
+    fn generated_path() -> PathBuf {
+        std::env::var(GENERATED_ENV).map_or_else(
+            |_| Path::new(env!("CARGO_MANIFEST_DIR")).join(GENERATED),
+            PathBuf::from,
+        )
+    }
+
     #[test]
     fn export_typescript_bindings() {
         let rendered = bridge().render();
-        let path = Path::new(GENERATED);
+        let path = generated_path();
         let normalized = normalized_bindings(&rendered.contents);
 
         if std::env::var_os("CI").is_some() {
             let committed =
-                fs::read_to_string(path).expect("read generated extension SDK bindings");
+                fs::read_to_string(&path).expect("read generated extension SDK bindings");
             assert!(
                 normalized == committed,
-                "stale bindings: {GENERATED} differs after normalization — run `npm run typegen -- --only extension` and commit the result"
+                "stale bindings: {} differs after normalization — run `npm --prefix packages/extension-sdk run typegen` from irodori-kit and commit the result",
+                path.display(),
             );
         } else {
             if let Some(parent) = path.parent() {

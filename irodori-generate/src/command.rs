@@ -169,9 +169,9 @@ impl ChatModel for CommandModel {
             let mut line = String::new();
             loop {
                 line.clear();
-                let n = reader
-                    .read_line(&mut line)
-                    .map_err(|e| IrodoriError::new(IrodoriErrorKind::Internal, format!("read stdout: {e}")))?;
+                let n = reader.read_line(&mut line).map_err(|e| {
+                    IrodoriError::new(IrodoriErrorKind::Internal, format!("read stdout: {e}"))
+                })?;
                 if n == 0 {
                     break;
                 }
@@ -190,7 +190,11 @@ impl ChatModel for CommandModel {
             }
             return Err(IrodoriError::new(
                 IrodoriErrorKind::Internal,
-                format!("`{}` exited with error: {}", self.config.program, stderr.trim()),
+                format!(
+                    "`{}` exited with error: {}",
+                    self.config.program,
+                    stderr.trim()
+                ),
             ));
         }
 

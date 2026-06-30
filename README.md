@@ -17,6 +17,12 @@ Foundation crates for [Irodori Table](https://github.com/hjosugi/irodori-table) 
 | `irodori-io` | Tabular import/export (CSV/TSV/JSON/JSONL/SQL/Parquet/Avro) |
 | `irodori-server` | Headless HTTP data API |
 
+## Packages
+
+| Package | Purpose |
+| --- | --- |
+| `packages/extension-sdk` | TypeScript extension SDK package, manifest schema, extension-dev helper, and starter templates generated from `irodori-extension`. |
+
 Consumed by `irodori-table` via git tag; for co-development use a local Cargo
 `[patch]` / path dependency pointing at a sibling `../irodori-kit` checkout.
 

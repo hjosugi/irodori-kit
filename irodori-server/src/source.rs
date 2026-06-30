@@ -19,22 +19,13 @@ use serde_json::Value;
 use crate::model::{ObjectInfo, ObjectKind, QueryResultDto};
 
 /// A backend failure, mapped to an HTTP status by the server.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DataError {
+    #[error("{0}")]
     NotFound(String),
+    #[error("{0}")]
     Backend(String),
 }
-
-impl std::fmt::Display for DataError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DataError::NotFound(m) => write!(f, "{m}"),
-            DataError::Backend(m) => write!(f, "{m}"),
-        }
-    }
-}
-
-impl std::error::Error for DataError {}
 
 /// A queryable source the API exposes. Implementations decide their own engine,
 /// connectivity, and write policy.

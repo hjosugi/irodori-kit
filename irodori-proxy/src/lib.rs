@@ -13,7 +13,7 @@ pub use forwarder::start_forwarder;
 pub use plan::{DialTarget, HopRegistry, TransportPlan, TransportStep, TransportStepKind};
 pub use protocol::{
     dial_resolved_transport, http_connect_handshake_sync, socks5_handshake_sync, HopStream,
-    TunneledStream,
+    ProxyError, Result, TunneledStream,
 };
 pub use resolved::{
     ResolvedProxy, ResolvedProxyAuth, ResolvedProxyChain, ResolvedProxyChainHop,

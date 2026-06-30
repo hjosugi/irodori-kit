@@ -11,19 +11,21 @@ use std::sync::Arc;
 
 use irodori_server::auth::{Authenticator, Scope, Token};
 use irodori_server::{serve, ApiServer, Registry, SqliteDataSource};
+use miette::{Context, IntoDiagnostic};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("irodori-server: {error}");
-        std::process::exit(1);
-    }
+async fn main() -> miette::Result<()> {
+    let _guard = init_tracing();
+    run().await
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run() -> miette::Result<()> {
     let addr: SocketAddr = std::env::var("IRODORI_SERVER_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
-        .parse()?;
+        .parse()
+        .into_diagnostic()
+        .wrap_err("invalid IRODORI_SERVER_ADDR")?;
     let sqlite_path =
         std::env::var("IRODORI_SERVER_SQLITE").unwrap_or_else(|_| ":memory:".to_string());
     let writable = matches!(
@@ -31,7 +33,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Ok("1") | Ok("true") | Ok("TRUE")
     );
 
-    let source = SqliteDataSource::open(&sqlite_path, !writable)?;
+    let source = SqliteDataSource::open(&sqlite_path, !writable)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to open SQLite source at {sqlite_path}"))?;
     let registry = Registry::new().with("default", Arc::new(source));
 
     let auth = match std::env::var("IRODORI_SERVER_TOKEN") {
@@ -44,6 +48,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let server = Arc::new(ApiServer::new(registry, auth));
-    serve(addr, server).await?;
+    serve(addr, server)
+        .await
+        .into_diagnostic()
+        .wrap_err("irodori-server failed")?;
     Ok(())
+}
+
+fn init_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("irodori_server=info,irodori=info,warn"));
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(writer)
+        .with_target(true)
+        .json()
+        .init();
+    guard
 }

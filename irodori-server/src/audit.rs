@@ -54,8 +54,10 @@ pub struct StderrAuditSink;
 impl AuditSink for StderrAuditSink {
     fn record(&self, entry: &AuditEntry) {
         match serde_json::to_string(entry) {
-            Ok(line) => eprintln!("{line}"),
-            Err(error) => eprintln!("audit: failed to serialize entry: {error}"),
+            Ok(line) => tracing::info!(target: "irodori_server::audit", audit = %line),
+            Err(error) => {
+                tracing::error!(target: "irodori_server::audit", error = %error, "failed to serialize audit entry")
+            }
         }
     }
 }

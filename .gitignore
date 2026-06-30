@@ -3,3 +3,5 @@
 *.pdb
 .irodori-local/
 .cc-tmp/
+/packages/extension-sdk/node_modules/
+/packages/extension-sdk/dist/

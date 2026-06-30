@@ -157,10 +157,7 @@ mod tests {
 
     #[test]
     fn flatten_ends_with_assistant_cue() {
-        let messages = vec![
-            ChatMessage::system("be terse"),
-            ChatMessage::user("hi"),
-        ];
+        let messages = vec![ChatMessage::system("be terse"), ChatMessage::user("hi")];
         let prompt = flatten_transcript(&messages);
         assert!(prompt.contains("System: be terse"));
         assert!(prompt.contains("User: hi"));

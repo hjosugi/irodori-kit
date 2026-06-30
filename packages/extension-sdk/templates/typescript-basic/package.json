@@ -1,0 +1,17 @@
+{
+  "name": "irodori-typescript-basic-extension",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT OR 0BSD",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node ../../bin/irodori-extension-dev.mjs ."
+  },
+  "dependencies": {
+    "@irodori-table/extension-sdk": "file:../.."
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3"
+  }
+}

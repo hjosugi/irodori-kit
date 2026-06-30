@@ -215,7 +215,7 @@ fn data_error(err: DataError) -> ApiResponse {
 /// Run the API over HTTP until the process ends.
 pub async fn serve(addr: SocketAddr, server: Arc<ApiServer>) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    eprintln!("irodori-server listening on http://{addr}");
+    tracing::info!(%addr, "irodori-server listening");
     loop {
         let (stream, _peer) = listener.accept().await?;
         let io = TokioIo::new(stream);
@@ -223,7 +223,7 @@ pub async fn serve(addr: SocketAddr, server: Arc<ApiServer>) -> std::io::Result<
         tokio::spawn(async move {
             let service = service_fn(move |req| handle(Arc::clone(&server), req));
             if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                eprintln!("connection error: {err}");
+                tracing::warn!(error = %err, "connection error");
             }
         });
     }

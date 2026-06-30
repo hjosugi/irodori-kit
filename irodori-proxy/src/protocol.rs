@@ -2,6 +2,53 @@ use crate::resolved::{ResolvedProxyHopConfig, ResolvedSshAuth, ResolvedTransport
 
 // ---- Network Primitives and Protocols ----
 
+pub type Result<T> = std::result::Result<T, ProxyError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyError {
+    #[error("{context}: {source}")]
+    Io {
+        context: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{context}: {source}")]
+    Ssh {
+        context: &'static str,
+        #[source]
+        source: ssh2::Error,
+    },
+    #[error("{context}: {source}")]
+    Context {
+        context: String,
+        #[source]
+        source: Box<ProxyError>,
+    },
+    #[error("{0}")]
+    Protocol(String),
+}
+
+impl ProxyError {
+    pub(crate) fn io(context: &'static str, source: std::io::Error) -> Self {
+        Self::Io { context, source }
+    }
+
+    fn ssh(context: &'static str, source: ssh2::Error) -> Self {
+        Self::Ssh { context, source }
+    }
+
+    fn protocol(message: impl Into<String>) -> Self {
+        Self::Protocol(message.into())
+    }
+
+    pub fn context(self, context: impl Into<String>) -> Self {
+        Self::Context {
+            context: context.into(),
+            source: Box::new(self),
+        }
+    }
+}
+
 fn base64_encode(input: &[u8]) -> String {
     const CHARSET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -47,7 +94,7 @@ pub fn socks5_handshake_sync<S>(
     host: &str,
     port: u16,
     auth: Option<(&str, &str)>,
-) -> std::result::Result<S, String>
+) -> Result<S>
 where
     S: std::io::Read + std::io::Write,
 {
@@ -63,22 +110,26 @@ where
     }
     stream
         .write_all(&greeting)
-        .map_err(|e| format!("socks5 greeting write failed: {e}"))?;
+        .map_err(|e| ProxyError::io("socks5 greeting write failed", e))?;
 
     let mut resp = [0u8; 2];
     stream
         .read_exact(&mut resp)
-        .map_err(|e| format!("socks5 greeting read failed: {e}"))?;
+        .map_err(|e| ProxyError::io("socks5 greeting read failed", e))?;
     if resp[0] != 0x05 {
-        return Err(format!("invalid socks5 version: {}", resp[0]));
+        return Err(ProxyError::protocol(format!(
+            "invalid socks5 version: {}",
+            resp[0]
+        )));
     }
 
     match resp[1] {
         0x00 => {}
         0x02 => {
-            let (user, pass) = auth.ok_or_else(|| "socks5 credentials missing".to_string())?;
+            let (user, pass) =
+                auth.ok_or_else(|| ProxyError::protocol("socks5 credentials missing"))?;
             if user.len() > 255 || pass.len() > 255 {
-                return Err("socks5 username or password too long".into());
+                return Err(ProxyError::protocol("socks5 username or password too long"));
             }
             let mut auth_req = vec![0x01, user.len() as u8];
             auth_req.extend_from_slice(user.as_bytes());
@@ -86,21 +137,31 @@ where
             auth_req.extend_from_slice(pass.as_bytes());
             stream
                 .write_all(&auth_req)
-                .map_err(|e| format!("socks5 auth write failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 auth write failed", e))?;
 
             let mut auth_resp = [0u8; 2];
             stream
                 .read_exact(&mut auth_resp)
-                .map_err(|e| format!("socks5 auth read failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 auth read failed", e))?;
             if auth_resp[0] != 0x01 {
-                return Err(format!("invalid socks5 auth subversion: {}", auth_resp[0]));
+                return Err(ProxyError::protocol(format!(
+                    "invalid socks5 auth subversion: {}",
+                    auth_resp[0]
+                )));
             }
             if auth_resp[1] != 0x00 {
-                return Err(format!("socks5 auth failed: status {}", auth_resp[1]));
+                return Err(ProxyError::protocol(format!(
+                    "socks5 auth failed: status {}",
+                    auth_resp[1]
+                )));
             }
         }
-        0xFF => return Err("socks5: no acceptable auth methods".into()),
-        other => return Err(format!("socks5: unsupported auth method: {other}")),
+        0xFF => return Err(ProxyError::protocol("socks5: no acceptable auth methods")),
+        other => {
+            return Err(ProxyError::protocol(format!(
+                "socks5: unsupported auth method: {other}"
+            )))
+        }
     }
 
     // 2. CONNECT request
@@ -118,7 +179,7 @@ where
         }
     } else {
         if host.len() > 255 {
-            return Err("target host too long for socks5".into());
+            return Err(ProxyError::protocol("target host too long for socks5"));
         }
         conn_req.push(0x03);
         conn_req.push(host.len() as u8);
@@ -127,24 +188,24 @@ where
     conn_req.extend_from_slice(&port.to_be_bytes());
     stream
         .write_all(&conn_req)
-        .map_err(|e| format!("socks5 connect write failed: {e}"))?;
+        .map_err(|e| ProxyError::io("socks5 connect write failed", e))?;
 
     // 3. Response
     let mut conn_resp_header = [0u8; 4];
     stream
         .read_exact(&mut conn_resp_header)
-        .map_err(|e| format!("socks5 connect response read failed: {e}"))?;
+        .map_err(|e| ProxyError::io("socks5 connect response read failed", e))?;
     if conn_resp_header[0] != 0x05 {
-        return Err(format!(
+        return Err(ProxyError::protocol(format!(
             "invalid socks5 reply version: {}",
             conn_resp_header[0]
-        ));
+        )));
     }
     if conn_resp_header[1] != 0x00 {
-        return Err(format!(
+        return Err(ProxyError::protocol(format!(
             "socks5 connect failed: status {}",
             conn_resp_header[1]
-        ));
+        )));
     }
 
     match conn_resp_header[3] {
@@ -152,26 +213,30 @@ where
             let mut buf = [0u8; 6];
             stream
                 .read_exact(&mut buf)
-                .map_err(|e| format!("socks5 bind read failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 bind read failed", e))?;
         }
         0x04 => {
             let mut buf = [0u8; 18];
             stream
                 .read_exact(&mut buf)
-                .map_err(|e| format!("socks5 bind read failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 bind read failed", e))?;
         }
         0x03 => {
             let mut len_buf = [0u8; 1];
             stream
                 .read_exact(&mut len_buf)
-                .map_err(|e| format!("socks5 bind read failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 bind read failed", e))?;
             let domain_len = len_buf[0] as usize;
             let mut domain_buf = vec![0u8; domain_len + 2];
             stream
                 .read_exact(&mut domain_buf)
-                .map_err(|e| format!("socks5 bind read failed: {e}"))?;
+                .map_err(|e| ProxyError::io("socks5 bind read failed", e))?;
         }
-        other => return Err(format!("socks5: invalid reply address type: {other}")),
+        other => {
+            return Err(ProxyError::protocol(format!(
+                "socks5: invalid reply address type: {other}"
+            )))
+        }
     }
 
     Ok(stream)
@@ -182,7 +247,7 @@ pub fn http_connect_handshake_sync<S>(
     host: &str,
     port: u16,
     auth: Option<(&str, &str)>,
-) -> std::result::Result<S, String>
+) -> Result<S>
 where
     S: std::io::Read + std::io::Write,
 {
@@ -199,17 +264,19 @@ where
 
     stream
         .write_all(req_str.as_bytes())
-        .map_err(|e| format!("HTTP CONNECT write failed: {e}"))?;
+        .map_err(|e| ProxyError::io("HTTP CONNECT write failed", e))?;
 
     let mut header_buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
         stream
             .read_exact(&mut byte)
-            .map_err(|e| format!("HTTP CONNECT response read failed: {e}"))?;
+            .map_err(|e| ProxyError::io("HTTP CONNECT response read failed", e))?;
         header_buf.push(byte[0]);
         if header_buf.len() > 4096 {
-            return Err("HTTP CONNECT response header too large (> 4096 bytes)".into());
+            return Err(ProxyError::protocol(
+                "HTTP CONNECT response header too large (> 4096 bytes)",
+            ));
         }
         if header_buf.ends_with(b"\r\n\r\n") {
             break;
@@ -220,15 +287,19 @@ where
     let mut lines = resp_str.lines();
     let status_line = lines
         .next()
-        .ok_or_else(|| "empty HTTP CONNECT response".to_string())?;
+        .ok_or_else(|| ProxyError::protocol("empty HTTP CONNECT response"))?;
 
     let parts: Vec<&str> = status_line.split_whitespace().collect();
     if parts.len() < 2 {
-        return Err(format!("invalid HTTP status line: {status_line}"));
+        return Err(ProxyError::protocol(format!(
+            "invalid HTTP status line: {status_line}"
+        )));
     }
     let code = parts[1];
     if code != "200" {
-        return Err(format!("HTTP CONNECT failed: {status_line}"));
+        return Err(ProxyError::protocol(format!(
+            "HTTP CONNECT failed: {status_line}"
+        )));
     }
 
     Ok(stream)
@@ -270,26 +341,29 @@ fn establish_ssh_session(
     auth: &ResolvedSshAuth,
     strict_host_key: bool,
     expected_host_key: Option<&str>,
-) -> std::result::Result<ssh2::Session, String> {
-    let mut sess = ssh2::Session::new().map_err(|e| e.to_string())?;
+) -> Result<ssh2::Session> {
+    let mut sess =
+        ssh2::Session::new().map_err(|e| ProxyError::ssh("failed to create SSH session", e))?;
     sess.set_tcp_stream(stream);
     sess.handshake()
-        .map_err(|e| format!("SSH handshake failed: {e}"))?;
+        .map_err(|e| ProxyError::ssh("SSH handshake failed", e))?;
 
     if strict_host_key {
         let (actual_key, _key_type) = sess
             .host_key()
-            .ok_or_else(|| "failed to get SSH host key".to_string())?;
+            .ok_or_else(|| ProxyError::protocol("failed to get SSH host key"))?;
         if let Some(expected) = expected_host_key {
             let actual_hex = hex_encode(actual_key);
             let actual_b64 = base64_encode(actual_key);
             if expected != actual_hex && expected != actual_b64 {
-                return Err(format!(
+                return Err(ProxyError::protocol(format!(
                     "Host key verification failed. Expected: {expected}, Got (hex): {actual_hex} or (b64): {actual_b64}"
-                ));
+                )));
             }
         } else {
-            return Err("strictHostKey is enabled but no hostKey was provided".to_string());
+            return Err(ProxyError::protocol(
+                "strictHostKey is enabled but no hostKey was provided",
+            ));
         }
     }
 
@@ -297,17 +371,17 @@ fn establish_ssh_session(
         ResolvedSshAuth::Agent => {
             let mut agent = sess
                 .agent()
-                .map_err(|e| format!("failed to connect to SSH agent: {e}"))?;
+                .map_err(|e| ProxyError::ssh("failed to connect to SSH agent", e))?;
             agent
                 .connect()
-                .map_err(|e| format!("failed to connect to SSH agent: {e}"))?;
+                .map_err(|e| ProxyError::ssh("failed to connect to SSH agent", e))?;
             agent
                 .list_identities()
-                .map_err(|e| format!("failed to list SSH agent identities: {e}"))?;
+                .map_err(|e| ProxyError::ssh("failed to list SSH agent identities", e))?;
             let mut authenticated = false;
             for identity in agent
                 .identities()
-                .map_err(|e| format!("failed to get SSH agent identities: {e}"))?
+                .map_err(|e| ProxyError::ssh("failed to get SSH agent identities", e))?
             {
                 if agent.userauth(username, &identity).is_ok() {
                     authenticated = true;
@@ -315,24 +389,26 @@ fn establish_ssh_session(
                 }
             }
             if !authenticated {
-                return Err("SSH agent authentication failed: no identity accepted".to_string());
+                return Err(ProxyError::protocol(
+                    "SSH agent authentication failed: no identity accepted",
+                ));
             }
         }
         ResolvedSshAuth::Password(password) => {
             sess.userauth_password(username, password)
-                .map_err(|e| format!("SSH password authentication failed: {e}"))?;
+                .map_err(|e| ProxyError::ssh("SSH password authentication failed", e))?;
         }
         ResolvedSshAuth::PrivateKey {
             private_key,
             passphrase,
         } => {
             sess.userauth_pubkey_memory(username, None, private_key, passphrase.as_deref())
-                .map_err(|e| format!("SSH private key authentication failed: {e}"))?;
+                .map_err(|e| ProxyError::ssh("SSH private key authentication failed", e))?;
         }
     }
 
     if !sess.authenticated() {
-        return Err("SSH session authentication failed".to_string());
+        return Err(ProxyError::protocol("SSH session authentication failed"));
     }
 
     Ok(sess)
@@ -344,9 +420,11 @@ pub struct TunneledStream {
 }
 
 impl TunneledStream {
-    pub fn set_nonblocking(&self, nonblocking: bool) -> std::result::Result<(), String> {
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
         match &self.stream {
-            HopStream::Tcp(s) => s.set_nonblocking(nonblocking).map_err(|e| e.to_string())?,
+            HopStream::Tcp(s) => s
+                .set_nonblocking(nonblocking)
+                .map_err(|e| ProxyError::io("failed to configure TCP stream blocking mode", e))?,
             HopStream::Ssh(_) => {
                 if let Some(sess) = &self.session {
                     sess.set_blocking(!nonblocking);
@@ -357,13 +435,11 @@ impl TunneledStream {
     }
 }
 
-pub fn dial_resolved_transport(
-    config: &ResolvedTransport,
-) -> std::result::Result<TunneledStream, String> {
+pub fn dial_resolved_transport(config: &ResolvedTransport) -> Result<TunneledStream> {
     match config {
         ResolvedTransport::Socks5Proxy(proxy) => {
             let stream = std::net::TcpStream::connect((proxy.host.as_str(), proxy.port))
-                .map_err(|e| format!("failed to connect to SOCKS5 proxy: {e}"))?;
+                .map_err(|e| ProxyError::io("failed to connect to SOCKS5 proxy", e))?;
             let auth = proxy
                 .auth
                 .as_ref()
@@ -377,7 +453,7 @@ pub fn dial_resolved_transport(
         }
         ResolvedTransport::HttpConnectProxy(proxy) => {
             let stream = std::net::TcpStream::connect((proxy.host.as_str(), proxy.port))
-                .map_err(|e| format!("failed to connect to HTTP proxy: {e}"))?;
+                .map_err(|e| ProxyError::io("failed to connect to HTTP proxy", e))?;
             let auth = proxy
                 .auth
                 .as_ref()
@@ -391,7 +467,7 @@ pub fn dial_resolved_transport(
         }
         ResolvedTransport::SshTunnel(tunnel) => {
             let stream = std::net::TcpStream::connect((tunnel.ssh_host.as_str(), tunnel.ssh_port))
-                .map_err(|e| format!("failed to connect to SSH host: {e}"))?;
+                .map_err(|e| ProxyError::io("failed to connect to SSH host", e))?;
             let sess = establish_ssh_session(
                 stream,
                 &tunnel.username,
@@ -401,7 +477,7 @@ pub fn dial_resolved_transport(
             )?;
             let channel = sess
                 .channel_direct_tcpip(&tunnel.target_host, tunnel.target_port, None)
-                .map_err(|e| format!("failed to open SSH direct-tcpip channel: {e}"))?;
+                .map_err(|e| ProxyError::ssh("failed to open SSH direct-tcpip channel", e))?;
             Ok(TunneledStream {
                 stream: HopStream::Ssh(channel),
                 session: Some(sess),
@@ -409,7 +485,7 @@ pub fn dial_resolved_transport(
         }
         ResolvedTransport::Chain(chain) => {
             if chain.hops.is_empty() {
-                return Err("proxy chain has no hops".to_string());
+                return Err(ProxyError::protocol("proxy chain has no hops"));
             }
 
             let mut final_session = None;
@@ -418,14 +494,14 @@ pub fn dial_resolved_transport(
             let mut current_stream = match &chain.hops[0].config {
                 ResolvedProxyHopConfig::Socks5 { host, port, auth } => {
                     let stream = std::net::TcpStream::connect((host.as_str(), *port))
-                        .map_err(|e| format!("chain hop 0 (SOCKS5) connection failed: {e}"))?;
+                        .map_err(|e| ProxyError::io("chain hop 0 (SOCKS5) connection failed", e))?;
                     let auth_creds = auth
                         .as_ref()
                         .map(|a| (a.username.as_str(), a.password.as_str()));
                     let next_hop = chain
                         .hops
                         .get(1)
-                        .ok_or_else(|| "chain hop 0 needs subsequent hop".to_string())?;
+                        .ok_or_else(|| ProxyError::protocol("chain hop 0 needs subsequent hop"))?;
                     let (next_host, next_port) = match &next_hop.config {
                         ResolvedProxyHopConfig::Socks5 { host, port, .. } => (host.as_str(), *port),
                         ResolvedProxyHopConfig::HttpConnect { host, port, .. } => {
@@ -436,19 +512,19 @@ pub fn dial_resolved_transport(
                         } => (ssh_host.as_str(), *ssh_port),
                     };
                     let stream = socks5_handshake_sync(stream, next_host, next_port, auth_creds)
-                        .map_err(|e| format!("chain hop 0 (SOCKS5) handshake failed: {e}"))?;
+                        .map_err(|e| e.context("chain hop 0 (SOCKS5) handshake failed"))?;
                     HopStream::Tcp(stream)
                 }
                 ResolvedProxyHopConfig::HttpConnect { host, port, auth } => {
                     let stream = std::net::TcpStream::connect((host.as_str(), *port))
-                        .map_err(|e| format!("chain hop 0 (HTTP) connection failed: {e}"))?;
+                        .map_err(|e| ProxyError::io("chain hop 0 (HTTP) connection failed", e))?;
                     let auth_creds = auth
                         .as_ref()
                         .map(|a| (a.username.as_str(), a.password.as_str()));
                     let next_hop = chain
                         .hops
                         .get(1)
-                        .ok_or_else(|| "chain hop 0 needs subsequent hop".to_string())?;
+                        .ok_or_else(|| ProxyError::protocol("chain hop 0 needs subsequent hop"))?;
                     let (next_host, next_port) = match &next_hop.config {
                         ResolvedProxyHopConfig::Socks5 { host, port, .. } => (host.as_str(), *port),
                         ResolvedProxyHopConfig::HttpConnect { host, port, .. } => {
@@ -460,7 +536,7 @@ pub fn dial_resolved_transport(
                     };
                     let stream =
                         http_connect_handshake_sync(stream, next_host, next_port, auth_creds)
-                            .map_err(|e| format!("chain hop 0 (HTTP) CONNECT failed: {e}"))?;
+                            .map_err(|e| e.context("chain hop 0 (HTTP) CONNECT failed"))?;
                     HopStream::Tcp(stream)
                 }
                 ResolvedProxyHopConfig::Ssh {
@@ -472,7 +548,7 @@ pub fn dial_resolved_transport(
                     host_key,
                 } => {
                     let stream = std::net::TcpStream::connect((ssh_host.as_str(), *ssh_port))
-                        .map_err(|e| format!("chain hop 0 (SSH) connection failed: {e}"))?;
+                        .map_err(|e| ProxyError::io("chain hop 0 (SSH) connection failed", e))?;
                     let sess = establish_ssh_session(
                         stream,
                         username,
@@ -483,7 +559,7 @@ pub fn dial_resolved_transport(
                     let next_hop = chain
                         .hops
                         .get(1)
-                        .ok_or_else(|| "chain hop 0 needs subsequent hop".to_string())?;
+                        .ok_or_else(|| ProxyError::protocol("chain hop 0 needs subsequent hop"))?;
                     let (next_host, next_port) = match &next_hop.config {
                         ResolvedProxyHopConfig::Socks5 { host, port, .. } => (host.as_str(), *port),
                         ResolvedProxyHopConfig::HttpConnect { host, port, .. } => {
@@ -495,7 +571,9 @@ pub fn dial_resolved_transport(
                     };
                     let channel = sess
                         .channel_direct_tcpip(next_host, next_port, None)
-                        .map_err(|e| format!("failed to open SSH channel for next hop: {e}"))?;
+                        .map_err(|e| {
+                            ProxyError::ssh("failed to open SSH channel for next hop", e)
+                        })?;
                     final_session = Some(sess);
                     HopStream::Ssh(channel)
                 }
@@ -531,7 +609,9 @@ pub fn dial_resolved_transport(
                             target_port,
                             auth_creds,
                         )
-                        .map_err(|e| format!("chain hop {i} (SOCKS5) handshake failed: {e}"))?;
+                        .map_err(|e| {
+                            e.context(format!("chain hop {i} (SOCKS5) handshake failed"))
+                        })?;
                     }
                     ResolvedProxyHopConfig::HttpConnect { auth, .. } => {
                         let auth_creds = auth
@@ -543,7 +623,7 @@ pub fn dial_resolved_transport(
                             target_port,
                             auth_creds,
                         )
-                        .map_err(|e| format!("chain hop {i} (HTTP) CONNECT failed: {e}"))?;
+                        .map_err(|e| e.context(format!("chain hop {i} (HTTP) CONNECT failed")))?;
                     }
                     ResolvedProxyHopConfig::Ssh {
                         username,
@@ -555,7 +635,7 @@ pub fn dial_resolved_transport(
                         let tcp_stream = match current_stream {
                             HopStream::Tcp(s) => s,
                             HopStream::Ssh(_) => {
-                                return Err(format!("chain hop {i} (SSH) cannot be nested inside another SSH channel (not supported by libssh2 Rust bindings)"));
+                                return Err(ProxyError::protocol(format!("chain hop {i} (SSH) cannot be nested inside another SSH channel (not supported by libssh2 Rust bindings)")));
                             }
                         };
                         let sess = establish_ssh_session(
@@ -567,7 +647,9 @@ pub fn dial_resolved_transport(
                         )?;
                         let channel = sess
                             .channel_direct_tcpip(target_host, target_port, None)
-                            .map_err(|e| format!("failed to open SSH channel for hop {i}: {e}"))?;
+                            .map_err(|e| {
+                                ProxyError::ssh("failed to open SSH channel for hop", e)
+                            })?;
                         final_session = Some(sess);
                         current_stream = HopStream::Ssh(channel);
                     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::protocol::{dial_resolved_transport, HopStream, TunneledStream};
+use crate::protocol::{dial_resolved_transport, HopStream, ProxyError, Result, TunneledStream};
 use crate::resolved::ResolvedTransport;
 
 struct Buffer {
@@ -59,7 +59,7 @@ impl Buffer {
 async fn forward_connection<T>(
     client_stream: tokio::net::TcpStream,
     mut remote_stream: T,
-) -> std::result::Result<(), String>
+) -> Result<()>
 where
     T: std::io::Read + std::io::Write + Unpin,
 {
@@ -78,7 +78,7 @@ where
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(format!("remote write failed: {e}")),
+                Err(e) => return Err(ProxyError::io("remote write failed", e)),
             }
         }
 
@@ -96,7 +96,7 @@ where
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(format!("client read failed: {e}")),
+                Err(e) => return Err(ProxyError::io("client read failed", e)),
             }
         } else {
             client_to_remote.compact();
@@ -111,7 +111,7 @@ where
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(format!("client write failed: {e}")),
+                Err(e) => return Err(ProxyError::io("client write failed", e)),
             }
         }
 
@@ -129,7 +129,7 @@ where
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(format!("remote read failed: {e}")),
+                Err(e) => return Err(ProxyError::io("remote read failed", e)),
             }
         } else {
             remote_to_client.compact();
@@ -145,7 +145,7 @@ where
 async fn forward_connection_stream(
     client_stream: tokio::net::TcpStream,
     tunneled: TunneledStream,
-) -> std::result::Result<(), String> {
+) -> Result<()> {
     match tunneled.stream {
         HopStream::Tcp(s) => forward_connection(client_stream, s).await,
         HopStream::Ssh(c) => forward_connection(client_stream, c).await,
@@ -154,13 +154,13 @@ async fn forward_connection_stream(
 
 pub async fn start_forwarder(
     resolved: ResolvedTransport,
-) -> std::result::Result<(u16, tokio_util::sync::CancellationToken), String> {
+) -> Result<(u16, tokio_util::sync::CancellationToken)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| format!("failed to bind local forwarder listener: {e}"))?;
+        .map_err(|e| ProxyError::io("failed to bind local forwarder listener", e))?;
     let local_port = listener
         .local_addr()
-        .map_err(|e| format!("failed to get listener address: {e}"))?
+        .map_err(|e| ProxyError::io("failed to get listener address", e))?
         .port();
 
     let cancellation_token = tokio_util::sync::CancellationToken::new();
@@ -185,17 +185,17 @@ pub async fn start_forwarder(
                                 let tunneled = match dial_res {
                                     Ok(Ok(t)) => t,
                                     Ok(Err(e)) => {
-                                        eprintln!("failed to dial target for forwarded connection: {e}");
+                                        tracing::warn!(error = %e, "failed to dial target for forwarded connection");
                                         return;
                                     }
                                     Err(e) => {
-                                        eprintln!("spawn_blocking failed during dial: {e}");
+                                        tracing::warn!(error = %e, "spawn_blocking failed during dial");
                                         return;
                                     }
                                 };
 
                                 if let Err(e) = tunneled.set_nonblocking(true) {
-                                    eprintln!("failed to set nonblocking on tunneled stream: {e}");
+                                    tracing::warn!(error = %e, "failed to set nonblocking on tunneled stream");
                                     return;
                                 }
 
@@ -203,14 +203,14 @@ pub async fn start_forwarder(
                                     _ = token.cancelled() => {}
                                     res = forward_connection_stream(client_stream, tunneled) => {
                                         if let Err(e) = res {
-                                            eprintln!("forwarding connection error: {e}");
+                                            tracing::warn!(error = %e, "forwarding connection error");
                                         }
                                     }
                                 }
                             });
                         }
                         Err(e) => {
-                            eprintln!("failed to accept forwarded connection: {e}");
+                            tracing::warn!(error = %e, "failed to accept forwarded connection");
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     }

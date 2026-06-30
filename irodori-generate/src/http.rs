@@ -189,9 +189,7 @@ impl GrammarModel for OpenAiCompatModel {
 fn messages_json(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
     messages
         .iter()
-        .map(|m| {
-            serde_json::json!({ "role": m.role.as_api_str(), "content": m.content })
-        })
+        .map(|m| serde_json::json!({ "role": m.role.as_api_str(), "content": m.content }))
         .collect()
 }
 

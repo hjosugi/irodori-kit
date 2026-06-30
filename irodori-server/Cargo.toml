@@ -28,6 +28,11 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 subtle = "2"
 async-trait = "0.1"
+miette = { version = "7.6.0", features = ["fancy"] }
+thiserror = "2.0.18"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
