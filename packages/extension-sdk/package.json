@@ -1,6 +1,6 @@
 {
   "name": "@irodori-table/extension-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "TypeScript SDK, manifest schema, and templates for Irodori Table extensions.",
   "license": "MIT OR 0BSD",
