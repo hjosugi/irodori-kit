@@ -7,6 +7,8 @@ Shared foundation for Irodori Table.
 - Rust crates for connections, security, completion, generation, IO, proxying,
   secure storage, extensions, and the headless server.
 - `packages/extension-sdk`, the TypeScript SDK and templates for extensions.
+- `packaging/`, shared release and package-manager templates for Irodori
+  products.
 
 `irodori-table` consumes this repo by Git tag.
 
