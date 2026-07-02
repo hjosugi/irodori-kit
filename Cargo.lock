@@ -1374,6 +1374,7 @@ name = "irodori-secure-store"
 version = "0.5.0"
 dependencies = [
  "irodori-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

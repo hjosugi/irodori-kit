@@ -1,6 +1,7 @@
 //! Secret handle and secure storage abstractions for connection credentials.
 
 use std::collections::HashMap;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -8,6 +9,8 @@ use irodori_core::{IrodoriError, Result, SecretRef};
 
 pub const CRATE_NAME: &str = "irodori-secure-store";
 pub const DEFAULT_SERVICE: &str = "irodori-table";
+#[cfg(target_os = "windows")]
+const WINDOWS_MAX_CREDENTIAL_BLOB_SIZE: usize = 5 * 512;
 
 pub trait SecureStore: Send + Sync {
     fn put(&self, handle: &SecretRef, value: SecretValue<'_>) -> Result<()>;
@@ -319,21 +322,139 @@ fn platform_delete(service: &str, account: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn platform_put(service: &str, account: &str, value: &str) -> Result<()> {
+    use windows_sys::Win32::Security::Credentials::{
+        CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+    };
+
+    let blob = value.as_bytes();
+    if blob.len() > WINDOWS_MAX_CREDENTIAL_BLOB_SIZE {
+        return Err(IrodoriError::validation(format!(
+            "secret value is too large for Windows Credential Manager generic credentials ({} bytes max)",
+            WINDOWS_MAX_CREDENTIAL_BLOB_SIZE
+        )));
+    }
+
+    let mut target: Vec<u16> = wide_null(&windows_target_name(service, account));
+    let mut username: Vec<u16> = wide_null(account);
+    let credential = CREDENTIALW {
+        Flags: 0,
+        Type: CRED_TYPE_GENERIC,
+        TargetName: target.as_mut_ptr(),
+        Comment: std::ptr::null_mut(),
+        LastWritten: Default::default(),
+        CredentialBlobSize: blob.len() as u32,
+        CredentialBlob: blob.as_ptr() as *mut u8,
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        AttributeCount: 0,
+        Attributes: std::ptr::null_mut(),
+        TargetAlias: std::ptr::null_mut(),
+        UserName: username.as_mut_ptr(),
+    };
+
+    let ok = unsafe { CredWriteW(&credential, 0) } != 0;
+    if ok {
+        Ok(())
+    } else {
+        Err(windows_credential_error("store secret"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn platform_get(service: &str, account: &str) -> Result<Option<String>> {
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+
+    let target: Vec<u16> = wide_null(&windows_target_name(service, account));
+    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+    let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } != 0;
+    if !ok {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(1168) {
+            return Ok(None);
+        }
+        return Err(windows_credential_error_from("read secret", error));
+    }
+    if credential.is_null() {
+        return Ok(None);
+    }
+
+    let result = unsafe {
+        let credential_ref = &*credential;
+        let blob = std::slice::from_raw_parts(
+            credential_ref.CredentialBlob,
+            credential_ref.CredentialBlobSize as usize,
+        );
+        String::from_utf8(blob.to_vec()).map_err(|_| {
+            IrodoriError::new(
+                irodori_core::IrodoriErrorKind::Internal,
+                "Windows Credential Manager returned non-UTF-8 secret data",
+            )
+        })
+    };
+    unsafe {
+        CredFree(credential.cast());
+    }
+    result.map(Some)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_delete(service: &str, account: &str) -> Result<()> {
+    use windows_sys::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
+
+    let target: Vec<u16> = wide_null(&windows_target_name(service, account));
+    let ok = unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0;
+    if ok {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(1168) {
+        Ok(())
+    } else {
+        Err(windows_credential_error_from("delete secret", error))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_target_name(service: &str, account: &str) -> String {
+    format!("{service}/{account}")
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_credential_error(action: &str) -> IrodoriError {
+    windows_credential_error_from(action, std::io::Error::last_os_error())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_credential_error_from(action: &str, error: std::io::Error) -> IrodoriError {
+    IrodoriError::transport(format!(
+        "failed to {action} in Windows Credential Manager: {error}"
+    ))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn platform_put(_service: &str, _account: &str, _value: &str) -> Result<()> {
     Err(unsupported_keychain())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn platform_get(_service: &str, _account: &str) -> Result<Option<String>> {
     Err(unsupported_keychain())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn platform_delete(_service: &str, _account: &str) -> Result<()> {
     Err(unsupported_keychain())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn os_keychain_unavailable(error: std::io::Error) -> IrodoriError {
     IrodoriError::new(
         irodori_core::IrodoriErrorKind::Unsupported,
@@ -341,6 +462,7 @@ fn os_keychain_unavailable(error: std::io::Error) -> IrodoriError {
     )
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn command_ok(ok: bool, action: &str) -> Result<()> {
     if ok {
         Ok(())
@@ -349,7 +471,7 @@ fn command_ok(ok: bool, action: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn unsupported_keychain() -> IrodoriError {
     IrodoriError::new(
         irodori_core::IrodoriErrorKind::Unsupported,
@@ -357,6 +479,7 @@ fn unsupported_keychain() -> IrodoriError {
     )
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn trim_trailing_newline(mut value: String) -> String {
     while value.ends_with(['\n', '\r']) {
         value.pop();
@@ -403,5 +526,14 @@ mod tests {
     fn os_keychain_store_has_a_valid_default_service() {
         let store = OsKeychainStore::default();
         assert_eq!(store.service, DEFAULT_SERVICE);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_target_names_include_service_and_account() {
+        assert_eq!(
+            windows_target_name(DEFAULT_SERVICE, "connections/prod/password"),
+            "irodori-table/connections/prod/password"
+        );
     }
 }
